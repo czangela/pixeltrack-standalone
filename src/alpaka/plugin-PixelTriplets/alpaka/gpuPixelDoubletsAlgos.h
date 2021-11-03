@@ -16,6 +16,8 @@
 #include "CAConstants.h"
 #include "GPUCACell.h"
 
+#define OUTERHITARRAYSIZE 32
+
 namespace ALPAKA_ACCELERATOR_NAMESPACE {
 
   namespace gpuPixelDoublets {
@@ -24,6 +26,43 @@ namespace ALPAKA_ACCELERATOR_NAMESPACE {
     using CellTracks = CAConstants::CellTracks;
     using CellNeighborsVector = CAConstants::CellNeighborsVector;
     using CellTracksVector = CAConstants::CellTracksVector;
+
+    using Hits = ::ALPAKA_ACCELERATOR_NAMESPACE::TrackingRecHit2DSOAView;
+    using hindex_type = Hits::hindex_type;
+
+    template <typename T_Acc>
+    ALPAKA_FN_ACC ALPAKA_FN_INLINE __attribute__((always_inline)) bool addOuterHitArray(
+        const T_Acc& acc,
+        GPUCACell* cells,
+        uint32_t* nCells,
+        CellNeighborsVector* cellNeighbors,
+        CellTracksVector* cellTracks,
+        TrackingRecHit2DSOAView const& __restrict__ hh,
+        GPUCACell::OuterHitOfCell* isOuterHitOfCell,
+        unsigned int& outerHitCounter,
+        hindex_type* outerHitsArray,
+        hindex_type i,
+        uint32_t pairLayerId,
+        uint32_t maxNumOfDoublets) {
+      // increment global index nCells by outerHitCounter
+      auto ind = alpaka::atomicAdd(acc, nCells, outerHitCounter, alpaka::hierarchy::Blocks{});
+      if (ind >= maxNumOfDoublets) {
+        alpaka::atomicSub(acc, nCells, outerHitCounter, alpaka::hierarchy::Blocks{});
+        return false;
+      }  // move to SimpleVector??
+         // init cells
+      for (auto iii = 0u; iii < outerHitCounter; ++iii) {
+        cells[ind + iii].init(*cellNeighbors, *cellTracks, hh, pairLayerId, ind + iii, i, outerHitsArray[iii]);
+        isOuterHitOfCell[outerHitsArray[iii]].push_back(acc, ind + iii);
+#ifdef GPU_DEBUG
+        if (isOuterHitOfCell[outerHitsArray[iii]].full())
+          ++tooMany;
+        ++tot;
+#endif
+      }
+      outerHitCounter = 0;
+      return true;
+    }
 
     template <typename T_Acc>
     ALPAKA_FN_ACC ALPAKA_FN_INLINE __attribute__((always_inline)) void doubletsFromHisto(
@@ -119,6 +158,9 @@ namespace ALPAKA_ACCELERATOR_NAMESPACE {
 
         auto i = (0 == pairLayerId) ? j : j - innerLayerCumulativeSize[pairLayerId - 1];
         i += offsets[inner];
+
+        hindex_type outerHitsArray[OUTERHITARRAYSIZE]{};  // initialize to 0
+        unsigned int outerHitCounter = 0;
 
         // printf("Hit in Layer %d %d %d %d\n", i, inner, pairLayerId, j);
 
@@ -248,20 +290,41 @@ namespace ALPAKA_ACCELERATOR_NAMESPACE {
             if (doPtCut && ptcut(oi, idphi))
               continue;
 
-            auto ind = alpaka::atomicAdd(acc, nCells, 1u, alpaka::hierarchy::Blocks{});
-            if (ind >= maxNumOfDoublets) {
-              alpaka::atomicSub(acc, nCells, 1u, alpaka::hierarchy::Blocks{});
-              break;
-            }  // move to SimpleVector??
-            // int layerPairId, int doubletId, int innerHitId, int outerHitId)
-            cells[ind].init(*cellNeighbors, *cellTracks, hh, pairLayerId, ind, i, oi);
-            isOuterHitOfCell[oi].push_back(acc, ind);
-#ifdef GPU_DEBUG
-            if (isOuterHitOfCell[oi].full())
-              ++tooMany;
-            ++tot;
-#endif
+            // oi is valid outer hit id
+            outerHitsArray[outerHitCounter] = oi;
+            ++outerHitCounter;
+            if (outerHitCounter == OUTERHITARRAYSIZE) {
+              if (!addOuterHitArray(acc,
+                                    cells,
+                                    nCells,
+                                    cellNeighbors,
+                                    cellTracks,
+                                    hh,
+                                    isOuterHitOfCell,
+                                    outerHitCounter,
+                                    outerHitsArray,
+                                    i,
+                                    pairLayerId,
+                                    maxNumOfDoublets)) {
+                break;
+              }
+            }
           }
+        }
+        if (outerHitCounter > 0) {
+          // push back rest
+          addOuterHitArray(acc,
+                           cells,
+                           nCells,
+                           cellNeighbors,
+                           cellTracks,
+                           hh,
+                           isOuterHitOfCell,
+                           outerHitCounter,
+                           outerHitsArray,
+                           i,
+                           pairLayerId,
+                           maxNumOfDoublets);
         }
 #ifdef GPU_DEBUG
         if (tooMany > 0)
