@@ -11,14 +11,15 @@
 #include "CUDADataFormats/gpuClusteringConstants.h"
 #include "CondFormats/pixelCPEforGPU.h"
 #include "DataFormats/approx_atan2.h"
+#include "CUDADataFormats/SiPixelDigisCUDASOAView.h"
 
 namespace gpuPixelRecHits {
 
   __global__ void getHits(pixelCPEforGPU::ParamsOnGPU const* __restrict__ cpeParams,
                           BeamSpotPOD const* __restrict__ bs,
-                          SiPixelDigisCUDA::DeviceConstView const* __restrict__ pdigis,
+                          SiPixelDigisCUDASOAView const* __restrict__ pdigis,
                           int numElements,
-                          SiPixelClustersCUDA::DeviceConstView const* __restrict__ pclusters,
+                          SiPixelClustersCUDA::SiPixelClustersCUDASOAView const* __restrict__ pclusters,
                           TrackingRecHit2DSOAView* phits) {
     // FIXME
     // the compiler seems NOT to optimize loads from views (even in a simple test case)
